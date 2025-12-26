@@ -1,0 +1,47 @@
+{
+  "temperature": 24.5,
+  "energy": 3.2,
+  "rooms": [
+    {
+      "id": "living_room",
+      "name": "Salon",
+      "image": "assets/images/rooms/living_room.png",
+      "devices": [
+        { "id": "lr_light", "name": "Lumière", "type": "light", "isOn": true, "level": 75 },
+        { "id": "lr_tv", "name": "Télévision", "type": "tv", "isOn": false },
+        { "id": "lr_ac", "name": "Climatiseur", "type": "ac", "isOn": true, "temp": 22, "mode": "cool" },
+        { "id": "lr_curtain", "name": "Rideaux", "type": "curtain", "isOn": true, "level": 40 }
+      ]
+    },
+    {
+      "id": "bedroom",
+      "name": "Chambre",
+      "image": "assets/images/rooms/bedroom.png",
+      "devices": [
+        { "id": "br_light", "name": "Lumière", "type": "light", "isOn": false, "level": 30 },
+        { "id": "br_ac", "name": "Climatiseur", "type": "ac", "isOn": false, "temp": 24, "mode": "auto" },
+        { "id": "br_curtain", "name": "Rideaux", "type": "curtain", "isOn": true, "level": 80 }
+      ]
+    },
+    {
+      "id": "kitchen",
+      "name": "Cuisine",
+      "image": "assets/images/rooms/kitchen.png",
+      "devices": [
+        { "id": "kt_light", "name": "Lumière", "type": "light", "isOn": true, "level": 60 },
+        { "id": "kt_socket", "name": "Prise", "type": "socket", "isOn": false },
+        { "id": "kt_camera", "name": "Caméra", "type": "camera", "isOn": true }
+      ]
+    },
+    {
+      "id": "garage",
+      "name": "Garage",
+      "image": "assets/images/rooms/garage.png",
+      "devices": [
+        { "id": "gr_door", "name": "Porte Garage", "type": "garage_door", "isOn": false },
+        { "id": "gr_light", "name": "Lumière", "type": "light", "isOn": false, "level": 50 },
+        { "id": "gr_camera", "name": "Caméra", "type": "camera", "isOn": false }
+      ]
+    }
+  ]
+}
