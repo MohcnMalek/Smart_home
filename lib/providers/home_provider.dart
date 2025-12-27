@@ -14,23 +14,39 @@ class HomeProvider extends ChangeNotifier {
   bool isLoading = false;
   String? error;
 
-  // ===== ENERGY (dynamic) =====
-  Timer? _energyTimer;
-  DateTime? _lastTick;
-  double _energyTotalKwh = 0.0;
+  // ✅ phrase à prononcer après commande vocale
+  String? lastVoiceFeedback;
 
-  final List<double> _energyHistory = [];
-  List<double> get energyHistory => List.unmodifiable(_energyHistory);
+  // ✅ énergie "instantanée" (kW) calculée depuis devices ON/OFF
+  double _energyKw = 0.0;
+  double get energy => _energyKw;
+
+  // ✅ courbe énergie (dernières 60 valeurs)
+  final List<double> energyHistory = [];
+
+  Timer? _energyTimer;
+
+  // -------------------------- LOAD --------------------------
+  Future<void> loadHome() async {
+    try {
+      isLoading = true;
+      error = null;
+      notifyListeners();
+
+      state = await service.fetchHomeState();
+
+      _pushEnergySample();      // 1er point
+      _startEnergyTimer();      // ✅ fait bouger la courbe en continu
+    } catch (e) {
+      error = e.toString();
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
+  }
 
   List<Room> get rooms => state?.rooms ?? [];
-
   double get temperature => state?.temperature ?? 0.0;
-
-  /// ✅ énergie totale consommée (kWh) qui augmente avec le temps
-  double get energy => double.parse(_energyTotalKwh.toStringAsFixed(2));
-
-  /// ✅ puissance instantanée (kW) selon devices ON/OFF
-  double get powerKw => double.parse(_computePowerKw().toStringAsFixed(2));
 
   int get activeDevicesCount {
     int count = 0;
@@ -42,29 +58,6 @@ class HomeProvider extends ChangeNotifier {
     return count;
   }
 
-  Future<void> loadHome() async {
-    try {
-      isLoading = true;
-      error = null;
-      notifyListeners();
-
-      state = await service.fetchHomeState();
-
-      // base from JSON (ex: 3.2 kWh)
-      _energyTotalKwh = state?.energy ?? 0.0;
-      _lastTick = DateTime.now();
-      _pushEnergySample(); // first point
-
-      // start ticker (histogram will move)
-      startEnergyTicker();
-    } catch (e) {
-      error = e.toString();
-    } finally {
-      isLoading = false;
-      notifyListeners();
-    }
-  }
-
   Room? roomById(String roomId) {
     for (final r in rooms) {
       if (r.id.toString() == roomId) return r;
@@ -72,10 +65,9 @@ class HomeProvider extends ChangeNotifier {
     return null;
   }
 
-  // ======= ACTIONS =======
+  // -------------------------- ACTIONS --------------------------
   Future<void> toggleDevice(String deviceId) async {
     state = await service.toggleDevice(deviceId);
-    // immediate sample after action
     _pushEnergySample();
     notifyListeners();
   }
@@ -99,118 +91,36 @@ class HomeProvider extends ChangeNotifier {
   }
 
   // ===========================================================
-  // ✅ ENERGY TICKER: makes histogram move automatically
-  // ===========================================================
-  void startEnergyTicker({Duration interval = const Duration(seconds: 2)}) {
-    if (_energyTimer != null) return;
-
-    _lastTick ??= DateTime.now();
-
-    _energyTimer = Timer.periodic(interval, (_) {
-      if (state == null) return;
-
-      final now = DateTime.now();
-      final last = _lastTick ?? now;
-      final dtSeconds = now.difference(last).inMilliseconds / 1000.0;
-      _lastTick = now;
-
-      // kWh += kW * hours
-      final dtHours = dtSeconds / 3600.0;
-      _energyTotalKwh += _computePowerKw() * dtHours;
-
-      _pushEnergySample();
-      notifyListeners();
-    });
-  }
-
-  void stopEnergyTicker() {
-    _energyTimer?.cancel();
-    _energyTimer = null;
-  }
-
-  @override
-  void dispose() {
-    stopEnergyTicker();
-    super.dispose();
-  }
-
-  // ======= ENERGY HELPERS =======
-  double _computePowerKw() {
-    double sum = 0;
-    for (final r in rooms) {
-      for (final d in r.devices) {
-        if (!d.isOn) continue;
-        sum += _powerForDevice(d);
-      }
-    }
-    return sum;
-  }
-
-  double _powerForDevice(Device d) {
-    switch (d.type) {
-      case 'light':
-        final level = (d.level ?? 100).clamp(0, 100).toDouble();
-        return 0.06 * (level / 100.0); // up to 0.06 kW (60W)
-
-      case 'tv':
-        return 0.12; // 120W
-
-      case 'ac':
-        return 1.50; // 1500W
-
-      case 'curtain':
-        final level = (d.level ?? 50).clamp(0, 100).toDouble();
-        return 0.02 * (level / 100.0); // small motor usage
-
-      case 'socket':
-        return 0.10; // 100W average simulated
-
-      case 'camera':
-        return 0.05; // 50W
-
-      case 'garage_door':
-        return 0.20; // simulated motor
-
-      default:
-        return 0.08;
-    }
-  }
-
-  void _pushEnergySample() {
-    // push current total kWh (you can also push powerKw if you prefer)
-    _energyHistory.add(energy);
-    if (_energyHistory.length > 12) _energyHistory.removeAt(0);
-  }
-
-  // ===========================================================
-  // ✅ VOICE COMMAND (your existing code) — keep it here
+  // ✅ BONUS: English voice command + feedback
   // ===========================================================
   Future<bool> runVoiceCommand(String spoken) async {
+    lastVoiceFeedback = null;
     if (state == null) return false;
 
     final s = _normalize(spoken);
 
+    // ACTION
     final wantsOn = _containsAny(s, const [
       'turn on',
       'switch on',
       'power on',
       'enable',
       'activate',
-      'lights on',
     ]);
-
     final wantsOff = _containsAny(s, const [
       'turn off',
       'switch off',
       'power off',
       'disable',
       'deactivate',
-      'lights off',
     ]);
 
-    if (!wantsOn && !wantsOff) return false;
-    final desiredOn = wantsOn && !wantsOff;
+    if (!wantsOn && !wantsOff) {
+      lastVoiceFeedback = "Sorry, I didn't catch ON or OFF.";
+      return false;
+    }
 
+    // ROOM
     String? roomId;
     if (_containsAny(s, const ['living room', 'livingroom', 'lounge'])) {
       roomId = 'living_room';
@@ -222,6 +132,7 @@ class HomeProvider extends ChangeNotifier {
       roomId = 'garage';
     }
 
+    // DEVICE TYPE
     String? type;
     if (_containsAny(s, const ['light', 'lights', 'lamp'])) {
       type = 'light';
@@ -235,11 +146,19 @@ class HomeProvider extends ChangeNotifier {
       type = 'socket';
     } else if (_containsAny(s, const ['camera', 'cam'])) {
       type = 'camera';
-    } else if (_containsAny(s, const ['garage door'])) {
+    } else if (_containsAny(s, const ['garage door', 'door'])) {
       type = 'garage_door';
     }
 
-    if (roomId == null && type == null) return false;
+    if (roomId == null && type == null) {
+      lastVoiceFeedback = "Sorry, I couldn't find the room or device type.";
+      return false;
+    }
+
+    // ✅ "all" support (optional)
+    final wantsAll = _containsAny(s, const ['all', 'everything']);
+
+    bool changedSomething = false;
 
     for (final r in rooms) {
       if (roomId != null && r.id != roomId) continue;
@@ -247,21 +166,109 @@ class HomeProvider extends ChangeNotifier {
       for (final d in r.devices) {
         if (type != null && d.type != type) continue;
 
-        if (d.isOn == desiredOn) {
-          // already OK
-          return true;
+        final shouldToggle = (wantsOn && !d.isOn) || (wantsOff && d.isOn);
+        if (shouldToggle) {
+          state = await service.toggleDevice(d.id);
+          changedSomething = true;
+          if (!wantsAll) {
+            _pushEnergySample();
+            notifyListeners();
+            lastVoiceFeedback = "Of course. ${_roomLabel(r.id)} ${_deviceLabel(d.type)} is now ${wantsOn ? 'ON' : 'OFF'}.";
+            return true;
+          }
         }
 
-        state = await service.toggleDevice(d.id);
-        _pushEnergySample();
-        notifyListeners();
-        return true;
+        if (!wantsAll) {
+          // already correct state
+          lastVoiceFeedback = "Of course. ${_roomLabel(r.id)} ${_deviceLabel(d.type)} is already ${d.isOn ? 'ON' : 'OFF'}.";
+          return true;
+        }
       }
     }
 
+    if (changedSomething) {
+      _pushEnergySample();
+      notifyListeners();
+      lastVoiceFeedback = "Of course. Done.";
+      return true;
+    }
+
+    lastVoiceFeedback = "Sorry, I couldn't find that device.";
     return false;
   }
 
+  // -------------------------- ENERGY --------------------------
+  void _startEnergyTimer() {
+    _energyTimer?.cancel();
+    _energyTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (state == null) return;
+      _pushEnergySample();
+      notifyListeners(); // ✅ fait bouger la courbe
+    });
+  }
+
+  void _pushEnergySample() {
+    _energyKw = _computeEnergyKw();
+
+    energyHistory.add(_energyKw);
+    if (energyHistory.length > 60) {
+      energyHistory.removeAt(0);
+    }
+  }
+
+  double _computeEnergyKw() {
+    if (state == null) return 0.0;
+
+    double sum = 0.0;
+
+    for (final room in rooms) {
+      for (final d in room.devices) {
+        if (!d.isOn) continue;
+
+        switch (d.type) {
+          case 'light':
+            // 0.06 kW max * level
+            sum += 0.06 * ((d.level ?? 100) / 100.0);
+            break;
+
+          case 'tv':
+            sum += 0.12;
+            break;
+
+          case 'ac':
+            // base 1.2 kW, mode fan smaller
+            final mode = (d.mode ?? 'auto').toLowerCase();
+            final factor = (mode == 'fan') ? 0.55 : 1.0;
+            sum += 1.20 * factor;
+            break;
+
+          case 'curtain':
+            // petit moteur
+            sum += 0.02 * ((d.level ?? 50) / 100.0);
+            break;
+
+          case 'socket':
+            sum += 0.10;
+            break;
+
+          case 'camera':
+            sum += 0.08;
+            break;
+
+          case 'garage_door':
+            sum += 0.15;
+            break;
+
+          default:
+            sum += 0.05;
+        }
+      }
+    }
+
+    return sum;
+  }
+
+  // ---------------- helpers ----------------
   String _normalize(String input) {
     var s = input.toLowerCase();
     s = s.replaceAll(RegExp(r'[^a-z0-9\s]+'), ' ');
@@ -274,5 +281,47 @@ class HomeProvider extends ChangeNotifier {
       if (s.contains(k)) return true;
     }
     return false;
+  }
+
+  String _roomLabel(String roomId) {
+    switch (roomId) {
+      case 'living_room':
+        return 'Living room';
+      case 'bedroom':
+        return 'Bedroom';
+      case 'kitchen':
+        return 'Kitchen';
+      case 'garage':
+        return 'Garage';
+      default:
+        return roomId;
+    }
+  }
+
+  String _deviceLabel(String type) {
+    switch (type) {
+      case 'light':
+        return 'light';
+      case 'tv':
+        return 'TV';
+      case 'ac':
+        return 'air conditioner';
+      case 'curtain':
+        return 'curtains';
+      case 'socket':
+        return 'socket';
+      case 'camera':
+        return 'camera';
+      case 'garage_door':
+        return 'garage door';
+      default:
+        return type;
+    }
+  }
+
+  @override
+  void dispose() {
+    _energyTimer?.cancel();
+    super.dispose();
   }
 }

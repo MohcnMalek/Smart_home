@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'providers/home_provider.dart';
 import 'services/simulation_service.dart';
+import 'services/voice_service.dart';
 import 'views/dashboard_page.dart';
 
 class SmartMaisonApp extends StatelessWidget {
@@ -13,6 +14,12 @@ class SmartMaisonApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         Provider<SimulationService>(create: (_) => SimulationService()),
+
+        Provider<VoiceService>(
+          create: (_) => VoiceService(),
+          dispose: (_, v) => v.dispose(),
+        ),
+
         ChangeNotifierProvider<HomeProvider>(
           create: (ctx) => HomeProvider(
             service: Provider.of<SimulationService>(ctx, listen: false),
