@@ -69,7 +69,6 @@ flutter:
     - assets/data/home_state.json
     - assets/images/devices/
     - assets/images/rooms/
-    - assets/images/backgrounds/
 
 
   # The following line ensures that the Material Icons font is

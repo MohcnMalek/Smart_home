@@ -1,4 +1,6 @@
+//home_provider
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 
 import '../models/home_state.dart';
@@ -14,17 +16,39 @@ class HomeProvider extends ChangeNotifier {
   bool isLoading = false;
   String? error;
 
-  // ✅ phrase à prononcer après commande vocale
+  // ✅ Historique des événements (Logs)
+  final List<String> eventLogs = [];
+
+  // ✅ Phrase à prononcer après commande vocale
   String? lastVoiceFeedback;
 
-  // ✅ énergie "instantanée" (kW) calculée depuis devices ON/OFF
+  // ✅ Liste des exemples wajdine (Ready-to-use) pour le bouton "Aide"
+  final List<Map<String, String>> voiceHelpExamples = [
+    {"title": "Living Room", "cmd": "Turn on the living room light"},
+    {"title": "Bedroom", "cmd": "Switch off the bedroom AC"},
+    {"title": "Kitchen", "cmd": "Turn on the kitchen light"},
+    {"title": "Garage", "cmd": "Open the garage door"},
+    {"title": "Night Mode", "cmd": "Activate night mode"},
+    {"title": "All Devices", "cmd": "Turn off all the lights"},
+  ];
+
+  // ✅ Énergie "instantanée" (kW) calculée
   double _energyKw = 0.0;
   double get energy => _energyKw;
 
-  // ✅ courbe énergie (dernières 60 valeurs)
+  // ✅ Courbe énergie (dernières 60 valeurs)
   final List<double> energyHistory = [];
 
   Timer? _energyTimer;
+
+  // --- Helper: Ajouter un Log ---
+  void _addLog(String action) {
+    final now = DateTime.now();
+    final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
+    eventLogs.insert(0, "$action ($timeStr)"); 
+    if (eventLogs.length > 30) eventLogs.removeLast();
+    notifyListeners();
+  }
 
   // -------------------------- LOAD --------------------------
   Future<void> loadHome() async {
@@ -35,8 +59,9 @@ class HomeProvider extends ChangeNotifier {
 
       state = await service.fetchHomeState();
 
-      _pushEnergySample();      // 1er point
-      _startEnergyTimer();      // ✅ fait bouger la courbe en continu
+      _pushEnergySample();      
+      _startEnergyTimer();      
+      _addLog("System Started");
     } catch (e) {
       error = e.toString();
     } finally {
@@ -49,36 +74,41 @@ class HomeProvider extends ChangeNotifier {
   double get temperature => state?.temperature ?? 0.0;
 
   int get activeDevicesCount {
-    int count = 0;
-    for (final r in rooms) {
-      for (final d in r.devices) {
-        if (d.isOn) count++;
-      }
-    }
-    return count;
-  }
-
-  Room? roomById(String roomId) {
-    for (final r in rooms) {
-      if (r.id.toString() == roomId) return r;
-    }
-    return null;
+    if (state == null) return 0;
+    return rooms.fold(0, (sum, room) => 
+      sum + room.devices.where((d) => d.isOn).length
+    );
   }
 
   // -------------------------- ACTIONS --------------------------
+  
   Future<void> toggleDevice(String deviceId) async {
+    final device = _findDevice(deviceId);
+    if (device != null) {
+      final action = device.isOn ? "OFF" : "ON";
+      _addLog("$action: ${device.name}");
+    }
+
     state = await service.toggleDevice(deviceId);
     _pushEnergySample();
     notifyListeners();
   }
 
   Future<void> setDeviceLevel(String deviceId, double level) async {
+    final device = _findDevice(deviceId);
+    if (device != null) {
+      _addLog("${device.name} level: ${level.round()}%");
+    }
     state = await service.setDeviceLevel(deviceId, level);
     _pushEnergySample();
     notifyListeners();
   }
 
   Future<void> setDeviceTemp(String deviceId, double temp) async {
+    final device = _findDevice(deviceId);
+    if (device != null) {
+      _addLog("${device.name} temp: ${temp.round()}°C");
+    }
     state = await service.setDeviceTemp(deviceId, temp);
     _pushEnergySample();
     notifyListeners();
@@ -90,234 +120,170 @@ class HomeProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ===========================================================
-  // ✅ BONUS: English voice command + feedback
-  // ===========================================================
+  // ✅ Scène "Mode Nuit"
+  Future<void> activateNightMode() async {
+    if (state == null) return;
+
+    _addLog("Scene: Night Mode Activated");
+
+    final updatedRooms = state!.rooms.map((room) {
+      final updatedDevices = room.devices.map((device) {
+        if (device.type == 'camera') return device.copyWith(isOn: true);
+        if (['light', 'tv', 'socket'].contains(device.type)) return device.copyWith(isOn: false);
+        if (['curtain', 'garage_door'].contains(device.type)) return device.copyWith(isOn: false);
+        if (device.type == 'ac') return device.copyWith(isOn: true, temp: 24.0, mode: 'auto');
+        return device;
+      }).toList();
+      return room.copyWith(devices: updatedDevices);
+    }).toList();
+
+    state = state!.copyWith(rooms: updatedRooms);
+    _pushEnergySample();
+    notifyListeners();
+  }
+
+  // -------------------------- VOICE COMMAND --------------------------
+  
   Future<bool> runVoiceCommand(String spoken) async {
     lastVoiceFeedback = null;
     if (state == null) return false;
 
     final s = _normalize(spoken);
 
-    // ACTION
-    final wantsOn = _containsAny(s, const [
-      'turn on',
-      'switch on',
-      'power on',
-      'enable',
-      'activate',
-    ]);
-    final wantsOff = _containsAny(s, const [
-      'turn off',
-      'switch off',
-      'power off',
-      'disable',
-      'deactivate',
-    ]);
+    // ✅ Detection "Help" direct f l-voix
+    if (_containsAny(s, ['help', 'aide', 'what can i say'])) {
+      lastVoiceFeedback = "You can check the help button for examples like 'Turn on the lights'.";
+      notifyListeners();
+      return false;
+    }
+
+    final wantsOn = _containsAny(s, ['turn on', 'switch on', 'power on', 'enable', 'activate', 'allume', 'ouvrir']);
+    final wantsOff = _containsAny(s, ['turn off', 'switch off', 'power off', 'disable', 'deactivate', 'éteins', 'fermer']);
 
     if (!wantsOn && !wantsOff) {
-      lastVoiceFeedback = "Sorry, I didn't catch ON or OFF.";
+      lastVoiceFeedback = "Action not recognized. Try 'Turn on' or 'Turn off'.";
+      notifyListeners();
       return false;
     }
 
-    // ROOM
     String? roomId;
-    if (_containsAny(s, const ['living room', 'livingroom', 'lounge'])) {
-      roomId = 'living_room';
-    } else if (_containsAny(s, const ['bedroom'])) {
-      roomId = 'bedroom';
-    } else if (_containsAny(s, const ['kitchen'])) {
-      roomId = 'kitchen';
-    } else if (_containsAny(s, const ['garage'])) {
-      roomId = 'garage';
-    }
+    if (_containsAny(s, ['living room', 'salon'])) roomId = 'living_room';
+    else if (_containsAny(s, ['bedroom', 'chambre'])) roomId = 'bedroom';
+    else if (_containsAny(s, ['kitchen', 'cuisine'])) roomId = 'kitchen';
 
-    // DEVICE TYPE
     String? type;
-    if (_containsAny(s, const ['light', 'lights', 'lamp'])) {
-      type = 'light';
-    } else if (_containsAny(s, const ['tv', 'television'])) {
-      type = 'tv';
-    } else if (_containsAny(s, const ['ac', 'air conditioner', 'airconditioning'])) {
-      type = 'ac';
-    } else if (_containsAny(s, const ['curtain', 'curtains', 'blind', 'blinds'])) {
-      type = 'curtain';
-    } else if (_containsAny(s, const ['socket', 'outlet', 'plug'])) {
-      type = 'socket';
-    } else if (_containsAny(s, const ['camera', 'cam'])) {
-      type = 'camera';
-    } else if (_containsAny(s, const ['garage door', 'door'])) {
-      type = 'garage_door';
-    }
-
-    if (roomId == null && type == null) {
-      lastVoiceFeedback = "Sorry, I couldn't find the room or device type.";
-      return false;
-    }
-
-    // ✅ "all" support (optional)
-    final wantsAll = _containsAny(s, const ['all', 'everything']);
+    if (_containsAny(s, ['light', 'lumière', 'lamp', 'bulb'])) type = 'light';
+    else if (_containsAny(s, ['tv', 'télé'])) type = 'tv';
+    else if (_containsAny(s, ['ac', 'clim', 'air conditioning'])) type = 'ac';
+    else if (_containsAny(s, ['garage', 'door'])) type = 'garage_door';
 
     bool changedSomething = false;
 
+    // ✅ Gestion spéciale "All Devices"
+    bool allDevices = _containsAny(s, ['all', 'tout', 'tous']);
+
     for (final r in rooms) {
-      if (roomId != null && r.id != roomId) continue;
-
+      if (roomId != null && r.id != roomId && !allDevices) continue;
       for (final d in r.devices) {
-        if (type != null && d.type != type) continue;
+        if (type != null && d.type != type && !allDevices) continue;
 
-        final shouldToggle = (wantsOn && !d.isOn) || (wantsOff && d.isOn);
-        if (shouldToggle) {
+        final shouldChange = (wantsOn && !d.isOn) || (wantsOff && d.isOn);
+        if (shouldChange) {
           state = await service.toggleDevice(d.id);
           changedSomething = true;
-          if (!wantsAll) {
-            _pushEnergySample();
-            notifyListeners();
-            lastVoiceFeedback = "Of course. ${_roomLabel(r.id)} ${_deviceLabel(d.type)} is now ${wantsOn ? 'ON' : 'OFF'}.";
-            return true;
-          }
-        }
-
-        if (!wantsAll) {
-          // already correct state
-          lastVoiceFeedback = "Of course. ${_roomLabel(r.id)} ${_deviceLabel(d.type)} is already ${d.isOn ? 'ON' : 'OFF'}.";
-          return true;
+          _addLog("Voice: ${d.name} ${wantsOn ? 'ON' : 'OFF'}");
         }
       }
     }
 
     if (changedSomething) {
+      lastVoiceFeedback = "Action completed successfully!";
       _pushEnergySample();
       notifyListeners();
-      lastVoiceFeedback = "Of course. Done.";
       return true;
+    } else {
+      lastVoiceFeedback = "I couldn't find any device matching your request.";
+      notifyListeners();
+      return false;
     }
-
-    lastVoiceFeedback = "Sorry, I couldn't find that device.";
-    return false;
   }
 
-  // -------------------------- ENERGY --------------------------
+  // -------------------------- ENERGY & TEMP LOGIC --------------------------
+  
   void _startEnergyTimer() {
     _energyTimer?.cancel();
-    _energyTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (state == null) return;
-      _pushEnergySample();
-      notifyListeners(); // ✅ fait bouger la courbe
+    _energyTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (state != null) {
+        _simulateTemperature(); 
+        _pushEnergySample();
+        notifyListeners();
+      }
     });
   }
 
-  void _pushEnergySample() {
-    _energyKw = _computeEnergyKw();
+  void _simulateTemperature() {
+    if (state == null) return;
+    double currentTemp = state!.temperature;
+    bool acOn = false;
+    double acTarget = 22.0;
 
-    energyHistory.add(_energyKw);
-    if (energyHistory.length > 60) {
-      energyHistory.removeAt(0);
-    }
-  }
-
-  double _computeEnergyKw() {
-    if (state == null) return 0.0;
-
-    double sum = 0.0;
-
-    for (final room in rooms) {
-      for (final d in room.devices) {
-        if (!d.isOn) continue;
-
-        switch (d.type) {
-          case 'light':
-            // 0.06 kW max * level
-            sum += 0.06 * ((d.level ?? 100) / 100.0);
-            break;
-
-          case 'tv':
-            sum += 0.12;
-            break;
-
-          case 'ac':
-            // base 1.2 kW, mode fan smaller
-            final mode = (d.mode ?? 'auto').toLowerCase();
-            final factor = (mode == 'fan') ? 0.55 : 1.0;
-            sum += 1.20 * factor;
-            break;
-
-          case 'curtain':
-            // petit moteur
-            sum += 0.02 * ((d.level ?? 50) / 100.0);
-            break;
-
-          case 'socket':
-            sum += 0.10;
-            break;
-
-          case 'camera':
-            sum += 0.08;
-            break;
-
-          case 'garage_door':
-            sum += 0.15;
-            break;
-
-          default:
-            sum += 0.05;
+    for (var r in rooms) {
+      for (var d in r.devices) {
+        if (d.type == 'ac' && d.isOn) {
+          acOn = true;
+          acTarget = d.temp ?? 22.0;
         }
       }
     }
 
+    double newTemp = currentTemp;
+    if (acOn) {
+      if (currentTemp > acTarget) newTemp -= 0.1;
+      else if (currentTemp < acTarget) newTemp += 0.1;
+    } else {
+      newTemp += (Random().nextDouble() - 0.5) * 0.05; 
+    }
+    state = state!.copyWith(temperature: newTemp);
+  }
+
+  void _pushEnergySample() {
+    _energyKw = _computeEnergyKw();
+    energyHistory.add(_energyKw);
+    if (energyHistory.length > 60) energyHistory.removeAt(0);
+  }
+
+  double _computeEnergyKw() {
+    if (state == null) return 0.0;
+    double sum = 0.0;
+    for (final r in rooms) {
+      for (final d in r.devices) {
+        if (!d.isOn) continue;
+        switch (d.type) {
+          case 'light': sum += 0.05 * ((d.level ?? 100) / 100); break;
+          case 'tv': sum += 0.15; break;
+          case 'ac': sum += (d.mode == 'heat') ? 1.5 : 1.0; break;
+          case 'socket': sum += 0.20; break;
+          case 'garage_door': sum += 0.10; break;
+          default: sum += 0.05;
+        }
+      }
+    }
     return sum;
   }
 
-  // ---------------- helpers ----------------
-  String _normalize(String input) {
-    var s = input.toLowerCase();
-    s = s.replaceAll(RegExp(r'[^a-z0-9\s]+'), ' ');
-    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return s;
+  // -------------------------- HELPERS --------------------------
+
+  Device? _findDevice(String id) {
+    for (var r in rooms) {
+      for (var d in r.devices) {
+        if (d.id == id) return d;
+      }
+    }
+    return null;
   }
 
-  bool _containsAny(String s, List<String> keys) {
-    for (final k in keys) {
-      if (s.contains(k)) return true;
-    }
-    return false;
-  }
-
-  String _roomLabel(String roomId) {
-    switch (roomId) {
-      case 'living_room':
-        return 'Living room';
-      case 'bedroom':
-        return 'Bedroom';
-      case 'kitchen':
-        return 'Kitchen';
-      case 'garage':
-        return 'Garage';
-      default:
-        return roomId;
-    }
-  }
-
-  String _deviceLabel(String type) {
-    switch (type) {
-      case 'light':
-        return 'light';
-      case 'tv':
-        return 'TV';
-      case 'ac':
-        return 'air conditioner';
-      case 'curtain':
-        return 'curtains';
-      case 'socket':
-        return 'socket';
-      case 'camera':
-        return 'camera';
-      case 'garage_door':
-        return 'garage door';
-      default:
-        return type;
-    }
-  }
+  String _normalize(String input) => input.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]+'), ' ').trim();
+  bool _containsAny(String s, List<String> keys) => keys.any((k) => s.contains(k));
 
   @override
   void dispose() {

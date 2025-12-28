@@ -48,7 +48,7 @@ class EnergyRealtimeCard extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              Icon(Icons.chevron_right_rounded, color: Colors.white.withOpacity(0.75)),
+              
             ],
           ),
           const SizedBox(height: 10),
