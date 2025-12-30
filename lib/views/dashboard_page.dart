@@ -39,6 +39,25 @@ class _DashboardPageState extends State<DashboardPage> {
     super.dispose();
   }
 
+  Future<String?> _bestLocaleId() async {
+    final locales = await _speech.locales();
+    final sys = await _speech.systemLocale();
+
+    // prefer English if available
+    final en = locales
+        .where((l) => (l.localeId).toLowerCase().startsWith('en'))
+        .toList();
+    if (en.isNotEmpty) return en.first.localeId;
+
+    // fallback system
+    if (sys != null) return sys.localeId;
+
+    // fallback any
+    if (locales.isNotEmpty) return locales.first.localeId;
+
+    return null;
+  }
+
   void _showVoiceHelp(HomeProvider vm) {
     showModalBottomSheet(
       context: context,
@@ -97,8 +116,7 @@ class _DashboardPageState extends State<DashboardPage> {
                             : (ok ? "Of course. Done." : "Sorry, I didn't understand.");
 
                         try {
-                          final voice = context.read<VoiceService>();
-                          await voice.speak(feedback);
+                          await context.read<VoiceService>().speak(feedback);
                         } catch (e) {
                           debugPrint("TTS error: $e");
                         }
@@ -163,6 +181,13 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
 
+    final localeId = await _bestLocaleId();
+    if (localeId == null) {
+      if (!mounted) return;
+      setState(() => _voiceStatus = '❌ No language available');
+      return;
+    }
+
     if (!mounted) return;
     setState(() {
       _listening = true;
@@ -170,7 +195,7 @@ class _DashboardPageState extends State<DashboardPage> {
     });
 
     await _speech.listen(
-      localeId: 'en_US',
+      localeId: localeId,
       listenMode: stt.ListenMode.confirmation,
       partialResults: true,
       onResult: (res) async {
@@ -196,18 +221,14 @@ class _DashboardPageState extends State<DashboardPage> {
             : (ok ? "Of course. Done." : "Sorry, I didn't understand.");
 
         try {
-          final voice = context.read<VoiceService>();
-          await voice.speak(feedback);
+          await context.read<VoiceService>().speak(feedback);
         } catch (e) {
           debugPrint("TTS error: $e");
         }
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(feedback),
-              duration: const Duration(seconds: 2),
-            ),
+            SnackBar(content: Text(feedback), duration: const Duration(seconds: 2)),
           );
         }
 
@@ -225,10 +246,7 @@ class _DashboardPageState extends State<DashboardPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF6F7FB),
       appBar: AppBar(
-        title: const Text(
-          "SmartHome",
-          style: TextStyle(fontWeight: FontWeight.w900),
-        ),
+        title: const Text("SmartHome", style: TextStyle(fontWeight: FontWeight.w900)),
         actions: [
           Consumer<HomeProvider>(
             builder: (_, vm, __) => IconButton(
@@ -236,26 +254,20 @@ class _DashboardPageState extends State<DashboardPage> {
               onPressed: () => _showVoiceHelp(vm),
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: _showLogs,
-          ),
+          IconButton(icon: const Icon(Icons.history), onPressed: _showLogs),
         ],
       ),
       body: SafeArea(
         child: Consumer<HomeProvider>(
           builder: (context, vm, _) {
-            final totalDevices = vm.rooms.fold<int>(0, (sum, r) => sum + r.devices.length);
+            final totalDevices =
+                vm.rooms.fold<int>(0, (sum, r) => sum + r.devices.length);
             final ratio = totalDevices == 0
                 ? 0.25
                 : (vm.activeDevicesCount / totalDevices).clamp(0.0, 1.0);
 
-            if (vm.isLoading) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (vm.error != null) {
-              return Center(child: Text('Error: ${vm.error}'));
-            }
+            if (vm.isLoading) return const Center(child: CircularProgressIndicator());
+            if (vm.error != null) return Center(child: Text('Error: ${vm.error}'));
 
             return Stack(
               children: [
@@ -293,7 +305,6 @@ class _DashboardPageState extends State<DashboardPage> {
                         ),
                         const SizedBox(height: 14),
                       ],
-
                       Row(
                         children: [
                           Expanded(
@@ -319,14 +330,9 @@ class _DashboardPageState extends State<DashboardPage> {
                         value: '${vm.activeDevicesCount}',
                         icon: Icons.toggle_on_outlined,
                       ),
-
                       const SizedBox(height: 12),
-
-                      // ✅ energy graph widget from your hierarchy
                       EnergyRealtimeCard(values: vm.energyHistory),
-
                       const SizedBox(height: 16),
-
                       _SceneCard(
                         onTap: () async {
                           await vm.activateNightMode();
@@ -342,19 +348,13 @@ class _DashboardPageState extends State<DashboardPage> {
                           }
                         },
                       ),
-
                       const SizedBox(height: 16),
-
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           const Text(
                             'Rooms',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF111111),
-                            ),
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
                           ),
                           TextButton(
                             onPressed: () => Navigator.push(
@@ -366,7 +366,6 @@ class _DashboardPageState extends State<DashboardPage> {
                         ],
                       ),
                       const SizedBox(height: 12),
-
                       SizedBox(
                         height: 160,
                         child: ListView.builder(
@@ -436,23 +435,9 @@ class _SummaryCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF6B7280),
-                  ),
-                ),
+                Text(title, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF6B7280))),
                 const SizedBox(height: 6),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF111111),
-                  ),
-                ),
+                Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900)),
               ],
             ),
           )
@@ -485,18 +470,12 @@ class _SceneCard extends StatelessWidget {
             children: [
               Text("Quick Scene", style: TextStyle(color: Colors.white70)),
               SizedBox(height: 4),
-              Text(
-                "Night Mode",
-                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900),
-              ),
+              Text("Night Mode", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900)),
             ],
           ),
           ElevatedButton(
             onPressed: onTap,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.white,
-              foregroundColor: Colors.indigo,
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.indigo),
             child: const Text("Activate"),
           )
         ],
